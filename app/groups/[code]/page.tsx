@@ -16,19 +16,11 @@ export default async function GroupPage({ params }: { params: Promise<{ code: st
     .from("groups")
     .select("id, name, invite_code")
     .eq("invite_code", code.toUpperCase())
-    .single();
+    .maybeSingle();
 
-  if (!group) redirect("/dashboard");
-
-  // Verify membership
-  const { data: membership } = await supabase
-    .from("group_members")
-    .select("id")
-    .eq("group_id", group.id)
-    .eq("user_id", user.id)
-    .single();
-
-  if (!membership) redirect(`/join/${code}`);
+  // RLS hides the row when the user isn't a member. Defer to the join flow,
+  // which uses an RPC that can look up the group regardless of membership.
+  if (!group) redirect(`/join/${code}`);
 
   // Load initial availability
   const { data: availRows } = await supabase

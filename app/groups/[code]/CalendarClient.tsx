@@ -123,7 +123,12 @@ export function CalendarClient({
         group_id: groupId,
         slot_start,
       }));
-      supabase.from("availability").upsert(rows).then(() => {});
+      supabase
+        .from("availability")
+        .upsert(rows, { ignoreDuplicates: true, onConflict: "user_id,group_id,slot_start" })
+        .then(({ error }) => {
+          if (error) console.error("availability upsert failed:", error);
+        });
     } else {
       supabase
         .from("availability")
@@ -131,7 +136,9 @@ export function CalendarClient({
         .eq("user_id", currentUserId)
         .eq("group_id", groupId)
         .in("slot_start", slots)
-        .then(() => {});
+        .then(({ error }) => {
+          if (error) console.error("availability delete failed:", error);
+        });
     }
   }
 

@@ -10,20 +10,20 @@ export default async function JoinPage({ params }: { params: Promise<{ code: str
     redirect(`/?next=/join/${code}`);
   }
 
-  const { data: group } = await supabase
-    .from("groups")
-    .select("id, invite_code")
-    .eq("invite_code", code.toUpperCase())
-    .single();
+  const { data, error } = await supabase.rpc("join_group_by_code", {
+    _code: code,
+  });
 
-  if (!group) {
+  if (error) {
+    console.error("join_group_by_code failed:", error);
+    redirect("/dashboard?error=join-failed");
+  }
+
+  // RPC returns 0 rows if invite_code wasn't found, otherwise 1 row
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  if (!row) {
     redirect("/dashboard?error=invalid-code");
   }
 
-  // Upsert membership (no-op if already a member)
-  await supabase
-    .from("group_members")
-    .upsert({ group_id: group.id, user_id: user.id }, { onConflict: "group_id,user_id" });
-
-  redirect(`/groups/${group.invite_code}`);
+  redirect(`/groups/${row.invite_code}`);
 }

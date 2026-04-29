@@ -1,4 +1,10 @@
--- Run this in your Supabase SQL editor to set up the database
+-- Run this in your Supabase SQL editor to set up the database from scratch.
+-- For an existing install, run the migration-*.sql files in order instead.
+
+-- Schema usage and default privileges for the authenticated role
+grant usage on schema public to authenticated;
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to authenticated;
 
 -- Public user profiles (readable by any authenticated user)
 create table if not exists public.profiles (
@@ -22,14 +28,18 @@ create policy "Users can update their own profile"
   on public.profiles for update
   using (auth.uid() = user_id);
 
--- Auto-create profile on new user signup
+-- Auto-create profile on new user signup (magic-link friendly: falls back to email username)
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
   insert into public.profiles (user_id, name, avatar_url)
   values (
     new.id,
-    new.raw_user_meta_data->>'full_name',
+    coalesce(
+      new.raw_user_meta_data->>'full_name',
+      new.raw_user_meta_data->>'name',
+      split_part(new.email, '@', 1)
+    ),
     new.raw_user_meta_data->>'avatar_url'
   )
   on conflict (user_id) do nothing;
@@ -79,16 +89,28 @@ alter table public.groups enable row level security;
 alter table public.group_members enable row level security;
 alter table public.availability enable row level security;
 
+-- Helper that bypasses RLS to check membership without recursion
+create or replace function public.is_group_member(_group_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.group_members
+    where group_id = _group_id
+      and user_id = auth.uid()
+  );
+$$;
+
+revoke all on function public.is_group_member(uuid) from public;
+grant execute on function public.is_group_member(uuid) to authenticated;
+
 -- RLS: groups
 create policy "Members can view their groups"
   on public.groups for select
-  using (
-    exists (
-      select 1 from public.group_members
-      where group_members.group_id = groups.id
-        and group_members.user_id = auth.uid()
-    )
-  );
+  using (auth.uid() = created_by or public.is_group_member(id));
 
 create policy "Authenticated users can create groups"
   on public.groups for insert
@@ -97,13 +119,7 @@ create policy "Authenticated users can create groups"
 -- RLS: group_members
 create policy "Members can view group membership"
   on public.group_members for select
-  using (
-    exists (
-      select 1 from public.group_members gm
-      where gm.group_id = group_members.group_id
-        and gm.user_id = auth.uid()
-    )
-  );
+  using (public.is_group_member(group_id));
 
 create policy "Authenticated users can join groups"
   on public.group_members for insert
@@ -116,13 +132,7 @@ create policy "Members can leave groups"
 -- RLS: availability
 create policy "Group members can view availability"
   on public.availability for select
-  using (
-    exists (
-      select 1 from public.group_members
-      where group_members.group_id = availability.group_id
-        and group_members.user_id = auth.uid()
-    )
-  );
+  using (public.is_group_member(group_id));
 
 create policy "Users can manage their own availability"
   on public.availability for insert
@@ -131,6 +141,47 @@ create policy "Users can manage their own availability"
 create policy "Users can delete their own availability"
   on public.availability for delete
   using (auth.uid() = user_id);
+
+-- Explicit table grants (in addition to default privileges above)
+grant select, insert, delete on public.groups to authenticated;
+grant select, insert, delete on public.group_members to authenticated;
+grant select, insert, delete on public.availability to authenticated;
+grant select, insert, update on public.profiles to authenticated;
+
+-- RPC: discover and join a group by invite code (bypasses RLS for the lookup)
+create or replace function public.join_group_by_code(_code text)
+returns table (group_id uuid, invite_code text, name text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  _gid uuid;
+  _name text;
+  _normalized text := upper(trim(_code));
+begin
+  if auth.uid() is null then
+    raise exception 'Must be signed in';
+  end if;
+
+  select id, groups.name into _gid, _name
+  from public.groups
+  where groups.invite_code = _normalized;
+
+  if _gid is null then
+    return;
+  end if;
+
+  insert into public.group_members (group_id, user_id)
+  values (_gid, auth.uid())
+  on conflict (group_id, user_id) do nothing;
+
+  return query select _gid, _normalized, _name;
+end;
+$$;
+
+revoke all on function public.join_group_by_code(text) from public;
+grant execute on function public.join_group_by_code(text) to authenticated;
 
 -- Enable realtime for availability table
 alter publication supabase_realtime add table public.availability;

@@ -28,22 +28,34 @@ export function CreateGroupDialog() {
     if (!user) return;
 
     const invite_code = randomCode();
-    const { data: group, error } = await supabase
+    const { data: group, error: groupError } = await supabase
       .from("groups")
       .insert({ name: name.trim(), invite_code, created_by: user.id })
       .select()
       .single();
 
-    if (error || !group) {
+    if (groupError || !group) {
+      console.error("Failed to create group:", groupError);
+      alert(`Could not create group: ${groupError?.message ?? "unknown error"}`);
       setLoading(false);
       return;
     }
 
-    await supabase.from("group_members").insert({ group_id: group.id, user_id: user.id });
+    const { error: memberError } = await supabase
+      .from("group_members")
+      .insert({ group_id: group.id, user_id: user.id });
+
+    if (memberError) {
+      console.error("Failed to add member:", memberError);
+      alert(`Could not join created group: ${memberError.message}`);
+      setLoading(false);
+      return;
+    }
 
     setOpen(false);
     setName("");
     router.push(`/groups/${group.invite_code}`);
+    router.refresh();
   }
 
   return (
