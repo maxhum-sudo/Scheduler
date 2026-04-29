@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { getNext7Days, HOURS, slotToISO, formatDayHeader, formatHour } from "@/utils/time";
 import { AvatarStack, type ProfileInfo } from "@/components/AvatarStack";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+
+type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 interface Props {
   groupId: string;
@@ -37,11 +38,14 @@ export function CalendarClient({
     },
   });
   const [copied, setCopied] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Drag state
   const isDragging = useRef(false);
   const dragValue = useRef<boolean>(true); // true = marking free
   const pendingSlots = useRef<Set<string>>(new Set());
+  const savedTimer = useRef<number | null>(null);
 
   const days = getNext7Days();
 
@@ -109,12 +113,27 @@ export function CalendarClient({
     }
     window.addEventListener("mouseup", onMouseUp);
     return () => window.removeEventListener("mouseup", onMouseUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function commitDrag() {
+  function flashSaved() {
+    if (savedTimer.current) window.clearTimeout(savedTimer.current);
+    setSaveStatus("saved");
+    savedTimer.current = window.setTimeout(() => setSaveStatus("idle"), 1500);
+  }
+
+  function showError(message: string) {
+    setSaveStatus("error");
+    setSaveError(message);
+  }
+
+  async function commitDrag() {
     const slots = Array.from(pendingSlots.current);
     pendingSlots.current = new Set();
     if (slots.length === 0) return;
+
+    setSaveStatus("saving");
+    setSaveError(null);
 
     const supabase = createClient();
     if (dragValue.current) {
@@ -123,22 +142,28 @@ export function CalendarClient({
         group_id: groupId,
         slot_start,
       }));
-      supabase
+      const { error } = await supabase
         .from("availability")
-        .upsert(rows, { ignoreDuplicates: true, onConflict: "user_id,group_id,slot_start" })
-        .then(({ error }) => {
-          if (error) console.error("availability upsert failed:", error);
-        });
+        .upsert(rows, { ignoreDuplicates: true, onConflict: "user_id,group_id,slot_start" });
+      if (error) {
+        console.error("availability upsert failed:", error);
+        showError(error.message);
+      } else {
+        flashSaved();
+      }
     } else {
-      supabase
+      const { error } = await supabase
         .from("availability")
         .delete()
         .eq("user_id", currentUserId)
         .eq("group_id", groupId)
-        .in("slot_start", slots)
-        .then(({ error }) => {
-          if (error) console.error("availability delete failed:", error);
-        });
+        .in("slot_start", slots);
+      if (error) {
+        console.error("availability delete failed:", error);
+        showError(error.message);
+      } else {
+        flashSaved();
+      }
     }
   }
 
@@ -184,35 +209,52 @@ export function CalendarClient({
     return userIds.map((id) => profiles[id] ?? { user_id: id, name: id.slice(0, 6), avatar_url: null });
   }, [avail, profiles]);
 
+  // Member roster for header
+  const memberProfiles: ProfileInfo[] = memberIds.map(
+    (id) => profiles[id] ?? { user_id: id, name: id.slice(0, 6), avatar_url: null }
+  );
+
   return (
     <div className="flex flex-col gap-4">
-      {/* Invite bar */}
-      <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl border border-gray-200 px-4 py-3">
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          <span className="text-sm text-gray-500">Invite link:</span>
-          <code className="text-sm font-mono bg-gray-100 px-2 py-0.5 rounded text-gray-700 truncate">
+      {/* Share / members card */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 mb-2">
+            <AvatarStack users={memberProfiles} maxVisible={5} size="sm" />
+            <span className="text-sm text-gray-600 font-medium">
+              {memberProfiles.length} {memberProfiles.length === 1 ? "person" : "people"} in this group
+            </span>
+          </div>
+          <p className="text-xs text-gray-500">
+            Send this link to invite others — they&apos;ll see and edit the same calendar:
+          </p>
+          <code className="block text-xs font-mono bg-gray-50 border border-gray-200 px-2 py-1 rounded mt-1.5 text-gray-700 truncate">
             {shareUrl}
           </code>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="font-mono">{inviteCode}</Badge>
-          <Button size="sm" variant="outline" onClick={copyInvite}>
-            {copied ? "Copied!" : "Copy link"}
-          </Button>
-        </div>
+        <Button
+          onClick={copyInvite}
+          size="lg"
+          className="shrink-0 sm:w-auto w-full"
+        >
+          {copied ? "Link copied!" : "Copy invite link"}
+        </Button>
       </div>
 
-      {/* Legend */}
-      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500 px-1">
-        <div className="flex items-center gap-1.5">
-          <div className="w-4 h-4 rounded bg-blue-200 border border-blue-300" />
-          <span>You&apos;re free</span>
+      {/* Save status + legend */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-1">
+        <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
+          <div className="flex items-center gap-1.5">
+            <div className="w-4 h-4 rounded bg-blue-200 border border-blue-300" />
+            <span>You&apos;re free</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-4 h-4 rounded bg-green-300 border border-green-400" />
+            <span>Others free</span>
+          </div>
+          <span className="text-gray-400">Click or drag to mark yourself free</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-4 h-4 rounded bg-green-300 border border-green-400" />
-          <span>Others free</span>
-        </div>
-        <span className="text-gray-400">Click or drag to mark yourself free</span>
+        <SaveIndicator status={saveStatus} error={saveError} />
       </div>
 
       {/* Calendar grid */}
@@ -234,10 +276,9 @@ export function CalendarClient({
           {/* Hour rows */}
           <div className="grid grid-cols-[60px_repeat(7,1fr)] gap-px bg-gray-200 rounded-lg overflow-hidden">
             {HOURS.map((hour) => (
-              <>
+              <div key={`row-${hour}`} className="contents">
                 {/* Hour label */}
                 <div
-                  key={`label-${hour}`}
                   className="bg-gray-50 flex items-center justify-end pr-2 text-[11px] text-gray-400 font-medium"
                   style={{ height: 52 }}
                 >
@@ -289,11 +330,37 @@ export function CalendarClient({
                     </div>
                   );
                 })}
-              </>
+              </div>
             ))}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function SaveIndicator({ status, error }: { status: SaveStatus; error: string | null }) {
+  if (status === "idle") {
+    return <span className="text-xs text-gray-400">Changes save automatically</span>;
+  }
+  if (status === "saving") {
+    return (
+      <span className="text-xs text-gray-500 flex items-center gap-1.5">
+        <span className="inline-block w-2 h-2 rounded-full bg-gray-400 animate-pulse" />
+        Saving…
+      </span>
+    );
+  }
+  if (status === "saved") {
+    return (
+      <span className="text-xs text-emerald-600 flex items-center gap-1 font-medium">
+        ✓ Saved
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs text-red-600 flex items-center gap-1 font-medium" title={error ?? "Save failed"}>
+      ✗ Save failed — {error ?? "unknown error"}
+    </span>
   );
 }
