@@ -35,7 +35,7 @@ export default async function LandingPage({
         </div>
 
         <p className="text-xs text-gray-400 text-center">
-          No passwords. Sign in with your Google account.
+          No passwords. We&apos;ll email you a sign-in link.
         </p>
       </div>
     </main>
