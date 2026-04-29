@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "scheduler-dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["/Users/max/Documents/Scheduler/node_modules/.bin/next", "dev", "--port", "${PORT}"],
+      "port": 3000,
+      "autoPort": true,
+      "cwd": "/Users/max/Documents/Scheduler"
+    }
+  ]
+}
